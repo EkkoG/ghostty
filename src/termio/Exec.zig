@@ -29,6 +29,16 @@ const PasswdEntry = internal_os.passwd.Entry;
 const windows = internal_os.windows;
 const ProcessInfo = @import("../pty.zig").ProcessInfo;
 
+/// Custom PTY file descriptors. If set (non-null), Subprocess.start
+/// will return these instead of creating a PTY and spawning a child.
+var custom_fds: ?struct { read: c_int, write: c_int } = null;
+
+/// Set custom PTY fds. Call before the surface starts rendering.
+/// Set both to -1 to restore default PTY behavior.
+pub fn setCustomFds(read: c_int, write: c_int) void {
+    custom_fds = .{ .read = read, .write = write };
+}
+
 const log = std.log.scoped(.io_exec);
 
 /// The termios poll rate in milliseconds.
@@ -113,7 +123,8 @@ pub fn threadEnter(
         // as a special case in os/flatpak.zig) since the
         // command is on the host.
         .flatpak => null,
-    } else return error.ProcessNotStarted;
+        .custom_fd => null,
+    } else null;
     errdefer if (process) |*p| p.deinit();
 
     // Track our process start time for abnormal exits
@@ -174,6 +185,7 @@ pub fn threadEnter(
             ),
 
             .fork_exec => {},
+            .custom_fd => {},
         }
     }
 
@@ -573,6 +585,9 @@ pub const Config = struct {
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
+
+    custom_read_fd: c_int = -1,
+    custom_write_fd: c_int = -1,
 };
 
 const Subprocess = struct {
@@ -590,6 +605,8 @@ const Subprocess = struct {
     screen_size: renderer.ScreenSize,
     pty: ?Pty = null,
     process: ?Process = null,
+    custom_read_fd: c_int = -1,
+    custom_write_fd: c_int = -1,
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
@@ -601,6 +618,9 @@ const Subprocess = struct {
 
         /// Flatpak DBus command
         flatpak: FlatpakHostCommand,
+
+        /// Custom file descriptors (no child process)
+        custom_fd,
     };
 
     const ArgsFormatter = struct {
@@ -864,6 +884,8 @@ const Subprocess = struct {
             .env = env,
             .cwd = cwd,
             .args = args,
+            .custom_read_fd = cfg.custom_read_fd,
+            .custom_write_fd = cfg.custom_write_fd,
 
             .rt_pre_exec_info = cfg.rt_pre_exec_info,
             .rt_post_fork_info = cfg.rt_post_fork_info,
@@ -890,6 +912,23 @@ const Subprocess = struct {
         write: Pty.Fd,
     } {
         assert(self.pty == null and self.process == null);
+
+        // If custom fds are provided (either per-instance or globally),
+        // use them directly instead of creating a PTY and spawning a child.
+        if (self.custom_read_fd != -1 and self.custom_write_fd != -1) {
+            self.process = .custom_fd;
+            return .{
+                .read = self.custom_read_fd,
+                .write = self.custom_write_fd,
+            };
+        }
+        if (custom_fds) |fds| {
+            self.process = .custom_fd;
+            return .{
+                .read = fds.read,
+                .write = fds.write,
+            };
+        }
 
         // This function is funny because on POSIX systems it can
         // fail in the forked process. This is flipped to true if
@@ -1105,6 +1144,8 @@ const Subprocess = struct {
                 _ = cmd.wait() catch |err|
                     log.err("error waiting for command to exit: {}", .{err});
             },
+
+            .custom_fd => {},
         }
 
         self.process = null;

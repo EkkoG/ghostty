@@ -421,6 +421,10 @@ pub const Surface = struct {
     /// that getTitle works without the implementer needing to save it.
     title: ?[:0]const u8 = null,
 
+    /// Custom PTY fds. If set, no PTY child process will be spawned.
+    custom_read_fd: c_int = -1,
+    custom_write_fd: c_int = -1,
+
     /// Surface initialization options.
     pub const Options = extern struct {
         /// The platform that this surface is being initialized for and
@@ -462,6 +466,10 @@ pub const Surface = struct {
 
         /// Context for the new surface
         context: apprt.surface.NewSurfaceContext = .window,
+
+        /// Custom PTY file descriptors. -1 means default PTY will be created.
+        custom_read_fd: c_int = -1,
+        custom_write_fd: c_int = -1,
     };
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
@@ -476,6 +484,8 @@ pub const Surface = struct {
             },
             .size = .{ .width = 800, .height = 600 },
             .cursor_pos = .{ .x = -1, .y = -1 },
+            .custom_read_fd = opts.custom_read_fd,
+            .custom_write_fd = opts.custom_write_fd,
         };
 
         // Add ourselves to the list of surfaces on the app.
@@ -583,6 +593,8 @@ pub const Surface = struct {
             app.core_app,
             app,
             self,
+            opts.custom_read_fd,
+            opts.custom_write_fd,
         );
         errdefer self.core_surface.deinit();
 

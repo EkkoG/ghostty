@@ -144,6 +144,10 @@ inspector: ?*inspectorpkg.Inspector = null,
 /// All our sizing information.
 size: rendererpkg.Size,
 
+/// Custom PTY file descriptors. -1 means default PTY.
+custom_read_fd: c_int = -1,
+custom_write_fd: c_int = -1,
+
 /// The configuration derived from the main config. We "derive" it so that
 /// we don't have a shared pointer hanging around that we need to worry about
 /// the lifetime of. This makes updating config at runtime easier.
@@ -474,6 +478,8 @@ pub fn init(
     app: *App,
     rt_app: *apprt.runtime.App,
     rt_surface: *apprt.runtime.Surface,
+    custom_read_fd: c_int,
+    custom_write_fd: c_int,
 ) !void {
     // Apply our conditional state. If we fail to apply the conditional state
     // then we log and attempt to move forward with the old config.
@@ -617,6 +623,8 @@ pub fn init(
         .io_thread = io_thread,
         .io_thr = undefined,
         .size = size,
+        .custom_read_fd = custom_read_fd,
+        .custom_write_fd = custom_write_fd,
         .config = derived_config,
 
         // Our conditional state is initialized to the app state. This
@@ -668,6 +676,8 @@ pub fn init(
             .term = config.term,
             .rt_pre_exec_info = .init(config),
             .rt_post_fork_info = .init(config),
+            .custom_read_fd = self.custom_read_fd,
+            .custom_write_fd = self.custom_write_fd,
         });
         errdefer io_exec.deinit();
 

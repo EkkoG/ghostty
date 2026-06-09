@@ -518,6 +518,8 @@ typedef struct {
   const char* initial_input;
   bool wait_after_command;
   ghostty_surface_context_e context;
+  int custom_read_fd;
+  int custom_write_fd;
 } ghostty_surface_config_s;
 
 typedef struct {
