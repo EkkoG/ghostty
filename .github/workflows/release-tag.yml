@@ -5,7 +5,7 @@ on:
         description: "Version to deploy (format: vX.Y.Z)"
         required: true
       upload:
-        description: "Upload final artifacts to R2"
+        description: "Upload final artifacts to GitHub Release"
         default: false
 
   push:
@@ -13,6 +13,9 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
 name: Release Tag
+
+permissions:
+  contents: write
 
 # We must only run one release workflow at a time to prevent corrupting
 # our release artifacts.
@@ -22,7 +25,7 @@ concurrency:
 
 jobs:
   setup:
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.extract_version.outputs.version }}
       build: ${{ steps.extract_build_info.outputs.build }}
@@ -73,21 +76,12 @@ jobs:
           cat $GITHUB_OUTPUT
 
   source-tarball:
-    runs-on: namespace-profile-ghostty-md
+    runs-on: ubuntu-latest
     needs: [setup]
     env:
       GHOSTTY_VERSION: ${{ needs.setup.outputs.version }}
-      ZIG_LOCAL_CACHE_DIR: /zig/local-cache
-      ZIG_GLOBAL_CACHE_DIR: /zig/global-cache
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Setup Cache
-        uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1.4.3
-        with:
-          path: |
-            /nix
-            /zig
 
       - uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
         with:
@@ -124,25 +118,15 @@ jobs:
 
   build-macos:
     needs: [setup]
-    runs-on: namespace-profile-ghostty-macos-tahoe
+    runs-on: macos-15
     timeout-minutes: 90
     env:
       GHOSTTY_VERSION: ${{ needs.setup.outputs.version }}
       GHOSTTY_BUILD: ${{ needs.setup.outputs.build }}
       GHOSTTY_COMMIT: ${{ needs.setup.outputs.commit }}
-      ZIG_LOCAL_CACHE_DIR: /Users/runner/zig/local-cache
-      ZIG_GLOBAL_CACHE_DIR: /Users/runner/zig/global-cache
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Setup Cache
-        uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1.4.3
-        with:
-          cache: |
-            xcode
-          path: |
-            /Users/runner/zig
 
       - uses: DeterminateSystems/nix-installer-action@main
         with:
@@ -153,7 +137,10 @@ jobs:
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: XCode Select
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+        run: |
+          if [ -d "/Applications/Xcode_26.3.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.3.app
+          fi
 
       - name: Xcode Version
         run: xcodebuild -version
@@ -291,7 +278,7 @@ jobs:
             ghostty-macos-universal-dsym.zip
 
   sentry-dsym:
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: ubuntu-latest
     needs: [build-macos]
     steps:
       - name: Install sentry-cli
@@ -311,7 +298,7 @@ jobs:
 
   appcast:
     needs: [setup, build-macos]
-    runs-on: namespace-profile-ghostty-macos-tahoe
+    runs-on: macos-15
     env:
       GHOSTTY_VERSION: ${{ needs.setup.outputs.version }}
       GHOSTTY_BUILD: ${{ needs.setup.outputs.build }}
@@ -365,7 +352,7 @@ jobs:
         github.event.inputs.upload == 'true') ||
       github.event_name == 'push'
     needs: [setup, source-tarball, build-macos, appcast]
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: ubuntu-latest
     env:
       GHOSTTY_VERSION: ${{ needs.setup.outputs.version }}
     steps:
@@ -384,27 +371,22 @@ jobs:
         with:
           name: source-tarball
 
-      # Upload all of our files EXCEPT the appcast. The appcast triggers
-      # updates in clients and we don't want to do that until we're
-      # sure these are uploaded.
-      - name: Prep Files
-        run: |
-          mkdir blob
-          mkdir -p blob/${GHOSTTY_VERSION}
-          mv "ghostty-${GHOSTTY_VERSION}.tar.gz" blob/${GHOSTTY_VERSION}/ghostty-${GHOSTTY_VERSION}.tar.gz
-          mv "ghostty-${GHOSTTY_VERSION}.tar.gz.minisig" blob/${GHOSTTY_VERSION}/ghostty-${GHOSTTY_VERSION}.tar.gz.minisig
-          mv ghostty-source.tar.gz blob/${GHOSTTY_VERSION}/ghostty-source.tar.gz
-          mv ghostty-source.tar.gz.minisig blob/${GHOSTTY_VERSION}/ghostty-source.tar.gz.minisig
-          mv ghostty-macos-universal.zip blob/${GHOSTTY_VERSION}/ghostty-macos-universal.zip
-          mv ghostty-macos-universal-dsym.zip blob/${GHOSTTY_VERSION}/ghostty-macos-universal-dsym.zip
-          mv Ghostty.dmg blob/${GHOSTTY_VERSION}/Ghostty.dmg
-          mv appcast.xml blob/${GHOSTTY_VERSION}/appcast-staged.xml
-      - name: Upload to R2
-        uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
+      - name: Stage appcast for release
+        run: mv appcast.xml appcast-staged.xml
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
-          r2-account-id: ${{ secrets.CF_R2_RELEASE_ACCOUNT_ID }}
-          r2-access-key-id: ${{ secrets.CF_R2_RELEASE_AWS_KEY }}
-          r2-secret-access-key: ${{ secrets.CF_R2_RELEASE_SECRET_KEY }}
-          r2-bucket: ghostty-release
-          source-dir: blob
-          destination-dir: ./
+          tag_name: v${{ needs.setup.outputs.version }}
+          name: "Ghostty v${{ needs.setup.outputs.version }}"
+          generate_release_notes: true
+          files: |
+            ghostty-${{ env.GHOSTTY_VERSION }}.tar.gz
+            ghostty-${{ env.GHOSTTY_VERSION }}.tar.gz.minisig
+            ghostty-source.tar.gz
+            ghostty-source.tar.gz.minisig
+            ghostty-macos-universal.zip
+            ghostty-macos-universal-dsym.zip
+            Ghostty.dmg
+            appcast-staged.xml
+          token: ${{ secrets.GH_RELEASE_TOKEN || github.token }}
